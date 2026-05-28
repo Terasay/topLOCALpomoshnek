@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-
+from voice import listen_ru
 from safety import is_safe_user_command
 from quick_actions import get_quick_action
 from agent_client import plan_command
@@ -120,4 +120,35 @@ def execute_confirmed_action(action: dict):
         "ok": True,
         "message": "Действие выполнено.",
         "action": action
+    }
+
+@app.post("/api/listen")
+def listen_voice():
+    try:
+        text = listen_ru()
+    except Exception as e:
+        return {
+            "ok": False,
+            "text": "",
+            "message": f"Ошибка микрофона: {e}"
+        }
+
+    if not text:
+        return {
+            "ok": False,
+            "text": "",
+            "message": "Не удалось распознать речь."
+        }
+
+    if text.startswith("[Ошибка"):
+        return {
+            "ok": False,
+            "text": "",
+            "message": text
+        }
+
+    return {
+        "ok": True,
+        "text": text,
+        "message": "Речь распознана."
     }

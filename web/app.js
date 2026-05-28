@@ -3,6 +3,7 @@ const sendBtn = document.getElementById("sendBtn");
 const log = document.getElementById("log");
 const useScreenshot = document.getElementById("useScreenshot");
 const autoAi = document.getElementById("autoAi");
+const voiceBtn = document.getElementById("voiceBtn");
 
 function addMessage(text, type = "") {
   const div = document.createElement("div");
@@ -97,5 +98,39 @@ input.addEventListener("keydown", (event) => {
     sendCommand();
   }
 });
+
+async function listenVoice() {
+  voiceBtn.disabled = true;
+  voiceBtn.textContent = "Слушаю...";
+
+  addMessage("Слушаю голосовую команду...", "user");
+
+  try {
+    const res = await fetch("/api/listen", {
+      method: "POST"
+    });
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      addMessage(data.message || "Не удалось распознать речь.", "error");
+      return;
+    }
+
+    addMessage("Распознано: " + data.text, "ok");
+
+    input.value = data.text;
+    await sendCommand();
+
+  } catch (err) {
+    addMessage("Ошибка голосового ввода: " + err.message, "error");
+  } finally {
+    voiceBtn.disabled = false;
+    voiceBtn.textContent = "Голос";
+    input.focus();
+  }
+}
+
+voiceBtn.addEventListener("click", listenVoice);
 
 addMessage("Интерфейс запущен. Быстрые команды выполняются автономно.", "ok");

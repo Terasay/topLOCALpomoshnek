@@ -1,4 +1,5 @@
 import time
+import subprocess
 import pyautogui
 
 
@@ -7,17 +8,23 @@ pyautogui.PAUSE = 0.15
 
 
 SAFE_APPS = {
-    "explorer": "explorer",
-    "проводник": "explorer",
-    "notepad": "notepad",
-    "блокнот": "notepad",
-    "calculator": "calc",
-    "калькулятор": "calc",
-    "chrome": "chrome",
-    "браузер": "chrome",
-    "edge": "msedge",
-    "paint": "mspaint",
-    "пейнт": "mspaint",
+    "explorer": "explorer.exe",
+    "проводник": "explorer.exe",
+
+    "notepad": "notepad.exe",
+    "блокнот": "notepad.exe",
+
+    "calculator": "calc.exe",
+    "калькулятор": "calc.exe",
+
+    "paint": "mspaint.exe",
+    "пейнт": "mspaint.exe",
+
+    "chrome": "chrome.exe",
+    "браузер": "chrome.exe",
+
+    "edge": "msedge.exe",
+
     "settings": "ms-settings:",
     "настройки": "ms-settings:",
 }
@@ -30,10 +37,7 @@ def open_app(app_name: str):
     if not target:
         raise ValueError(f"Приложение не разрешено или неизвестно: {app_name}")
 
-    pyautogui.hotkey("win", "r")
-    time.sleep(0.2)
-    pyautogui.write(target)
-    pyautogui.press("enter")
+    subprocess.Popen(target, shell=True)
 
 
 def press_hotkey(keys: list[str]):

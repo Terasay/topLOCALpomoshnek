@@ -19,3 +19,8 @@ pip install pygetwindow pyscreeze pymsgbox pytweening
 
 pip install fastapi uvicorn 
 (для интерфейса от 005)
+
+pip install PyAudio
+pip install SpeechRecognition
+
+pip install scipy
