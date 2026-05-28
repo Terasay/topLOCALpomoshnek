@@ -16,6 +16,9 @@ def get_quick_action(command: str):
     if "вставь" in text:
         return {"action": "hotkey", "keys": ["ctrl", "v"]}
 
+    if "выдели всё" in text or "выделить всё" in text:
+        return {"action": "hotkey", "keys": ["ctrl", "a"]}
+
     if "enter" in text or "энтер" in text:
         return {"action": "press_key", "key": "enter"}
 

@@ -15,3 +15,7 @@ FFmpeg Windows Builds
 На Windows иногда надо:
 
 pip install pygetwindow pyscreeze pymsgbox pytweening
+
+
+pip install fastapi uvicorn 
+(для интерфейса от 005)
