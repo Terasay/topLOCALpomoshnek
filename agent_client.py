@@ -66,6 +66,16 @@ explorer, notepad, calculator, chrome, edge, paint, settings
 9. Переключиться на приложение:
 {"tool":"focus_app","app":"chrome"}
 
+Разрешённые приложения и их app id:
+- explorer: проводник, explorer
+- taskmgr: диспетчер задач, task manager
+- notepad: блокнот, notepad
+- calculator: калькулятор, calc
+- chrome: браузер, chrome
+- edge: edge
+- paint: paint, пейнт
+- settings: настройки
+
 Правила:
 - Если пользователь просит открыть проводник — используй open_app explorer.
 - Если пользователь просит открыть блокнот — используй open_app notepad.
@@ -78,6 +88,15 @@ explorer, notepad, calculator, chrome, edge, paint, settings
 - Если пользователь просит закрыть приложение — используй close_app.
 - Если пользователь просит переключиться на приложение — используй focus_app.
 - Не открывай приложение, если пользователь просит его закрыть.
+- Если пользователь просит открыть приложение — используй open_app.
+- Если пользователь просит закрыть приложение — используй close_app.
+- Если пользователь просит переключиться на приложение — используй focus_app.
+- "диспетчер задач" всегда app="taskmgr".
+- "проводник" всегда app="explorer".
+- "блокнот" всегда app="notepad".
+- "калькулятор" всегда app="calculator".
+- Не используй press_hotkey ctrl+shift+esc для закрытия диспетчера задач.
+- Для закрытия диспетчера задач используй {"tool":"close_app","app":"taskmgr"}.
 - Внимательно различай:
   открыть
   закрыть

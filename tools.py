@@ -28,6 +28,9 @@ SAFE_APPS = {
 
     "settings": "ms-settings:",
     "настройки": "ms-settings:",
+
+    "taskmgr": "taskmgr.exe",
+    "диспетчер задач": "taskmgr.exe",
 }
 
 
@@ -54,7 +57,10 @@ def close_app(app_name: str):
         "калькулятор": ["Калькулятор", "Calculator"],
 
         "chrome": ["Chrome"],
-        "edge": ["Edge"]
+        "edge": ["Edge"],
+
+        "taskmgr": ["Диспетчер задач", "Task Manager"],
+        "диспетчер задач": ["Диспетчер задач", "Task Manager"],
     }
 
     titles = possible_titles.get(app)
@@ -86,6 +92,7 @@ def focus_app(app_name: str):
         "notepad": ["Блокнот", "Notepad"],
         "calculator": ["Калькулятор", "Calculator"],
         "chrome": ["Chrome"],
+        "taskmgr": ["Диспетчер задач", "Task Manager"],
     }
 
     titles = possible_titles.get(app)
