@@ -22,8 +22,8 @@ def main():
             print(f"Блокировано: {reason}")
             continue
 
-        screenshot_path = take_screenshot()
-        print("Скриншот сделан. Думаю...")
+        screenshot_path = None
+        print("Думаю без скриншота...")
 
         action = ask_ollama(user_command, screenshot_path)
 

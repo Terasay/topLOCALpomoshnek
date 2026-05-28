@@ -1,7 +1,11 @@
 import base64
 import json
+import re
 import requests
-from config import OLLAMA_MODEL, OLLAMA_URL
+from config import OLLAMA_MODEL
+
+
+OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 
 
 def image_to_base64(path: str) -> str:
@@ -9,52 +13,87 @@ def image_to_base64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+def extract_json(text: str) -> dict:
+    text = text.strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "action": "refuse",
+        "reason": f"Модель вернула не JSON: {text}"
+    }
+
+
 def ask_ollama(user_command: str, screenshot_path: str | None = None) -> dict:
     system_prompt = """
 Ты управляющий ассистентом Windows.
-Твоя задача — вернуть ТОЛЬКО JSON без пояснений.
+Верни ТОЛЬКО один JSON-объект без markdown и пояснений.
 
 Доступные действия:
-1. move_mouse: {"action":"move_mouse","x":100,"y":200}
-2. click: {"action":"click","x":100,"y":200,"button":"left"}
-3. type_text: {"action":"type_text","text":"hello"}
-4. press_key: {"action":"press_key","key":"enter"}
-5. hotkey: {"action":"hotkey","keys":["ctrl","c"]}
-6. screenshot: {"action":"screenshot"}
-7. wait: {"action":"wait","seconds":1}
+{"action":"move_mouse","x":100,"y":200}
+{"action":"click","x":100,"y":200,"button":"left"}
+{"action":"type_text","text":"hello"}
+{"action":"press_key","key":"enter"}
+{"action":"hotkey","keys":["ctrl","c"]}
+{"action":"screenshot"}
+{"action":"wait","seconds":1}
+{"action":"refuse","reason":"причина"}
+
+Если пользователь просит нажать Пуск, верни:
+{"action":"press_key","key":"win"}
 
 Запрещено:
 - удалять файлы
-- запускать команды cmd/powershell
+- запускать cmd/powershell
 - менять системные настройки
 - вводить пароли
 - покупать что-либо
 - отправлять сообщения без подтверждения пользователя
-
-Если команда опасная или непонятная:
-{"action":"refuse","reason":"причина"}
 """
 
-    prompt = f"{system_prompt}\n\nКоманда пользователя: {user_command}"
+    content = f"Команда пользователя: {user_command}"
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False
+    message = {
+        "role": "user",
+        "content": content
     }
 
     if screenshot_path:
-        payload["images"] = [image_to_base64(screenshot_path)]
+        message["images"] = [image_to_base64(screenshot_path)]
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            message
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0
+        }
+    }
+
+    print("Отправляю запрос в Ollama...")
+
+    response = requests.post(OLLAMA_CHAT_URL, json=payload, timeout=300)
+
+    print("HTTP статус:", response.status_code)
     response.raise_for_status()
 
-    raw = response.json().get("response", "").strip()
+    data = response.json()
+    raw = data.get("message", {}).get("content", "").strip()
 
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {
-            "action": "refuse",
-            "reason": f"Модель вернула не JSON: {raw}"
-        }
+    print("Сырой ответ модели:")
+    print(raw)
+
+    return extract_json(raw)
