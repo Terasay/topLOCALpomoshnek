@@ -24,3 +24,5 @@ pip install PyAudio
 pip install SpeechRecognition
 
 pip install scipy
+
+py -3.11 -m pip install psutil

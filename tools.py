@@ -2,111 +2,204 @@ import time
 import subprocess
 import pyautogui
 import pygetwindow as gw
+import psutil
+from rapidfuzz import fuzz
 
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.15
 
 
-SAFE_APPS = {
-    "explorer": "explorer.exe",
-    "проводник": "explorer.exe",
+APP_ALIASES = {
+    "проводник": "explorer",
+    "explorer": "explorer",
 
-    "notepad": "notepad.exe",
-    "блокнот": "notepad.exe",
+    "блокнот": "notepad",
+    "notepad": "notepad",
 
-    "calculator": "calc.exe",
-    "калькулятор": "calc.exe",
+    "калькулятор": "calculator",
+    "calculator": "calculator",
+    "calc": "calculator",
 
-    "paint": "mspaint.exe",
-    "пейнт": "mspaint.exe",
+    "paint": "paint",
+    "паинт": "paint",
+    "пейнт": "paint",
 
-    "chrome": "chrome.exe",
-    "браузер": "chrome.exe",
+    "браузер": "chrome",
+    "chrome": "chrome",
+    "хром": "chrome",
 
-    "edge": "msedge.exe",
+    "edge": "edge",
 
-    "settings": "ms-settings:",
-    "настройки": "ms-settings:",
+    "диспетчер задач": "taskmgr",
+    "task manager": "taskmgr",
+    "taskmgr": "taskmgr",
 
-    "taskmgr": "taskmgr.exe",
-    "диспетчер задач": "taskmgr.exe",
+    "настройки": "settings",
+    "settings": "settings",
 }
 
 
-def open_app(app_name: str):
+OPEN_COMMANDS = {
+    "explorer": "explorer.exe",
+    "notepad": "notepad.exe",
+    "calculator": "calc.exe",
+    "paint": "mspaint.exe",
+    "chrome": "chrome.exe",
+    "edge": "msedge.exe",
+    "taskmgr": "taskmgr.exe",
+    "settings": "ms-settings:",
+}
+
+
+PROCESS_HINTS = {
+    "explorer": ["explorer.exe"],
+    "notepad": ["notepad.exe"],
+    "calculator": ["calculator.exe", "calc.exe"],
+    "paint": ["mspaint.exe", "paint.exe"],
+    "chrome": ["chrome.exe"],
+    "edge": ["msedge.exe"],
+    "taskmgr": ["taskmgr.exe"],
+    "settings": ["SystemSettings.exe"],
+}
+
+
+def normalize_app_name(app_name: str) -> str:
     app = app_name.lower().strip()
-    target = SAFE_APPS.get(app)
 
-    if not target:
-        raise ValueError(f"Приложение не разрешено или неизвестно: {app_name}")
+    if app in APP_ALIASES:
+        return APP_ALIASES[app]
 
-    subprocess.Popen(target, shell=True)
+    best_key = None
+    best_score = 0
+
+    for alias in APP_ALIASES:
+        score = fuzz.ratio(app, alias)
+        if score > best_score:
+            best_score = score
+            best_key = alias
+
+    if best_score >= 70:
+        return APP_ALIASES[best_key]
+
+    return app
+
+
+def open_app(app_name: str):
+    app = normalize_app_name(app_name)
+    target = OPEN_COMMANDS.get(app)
+
+    if target:
+        subprocess.Popen(target, shell=True)
+        return
+
+    # Универсальный fallback: открыть через Windows Search
+    pyautogui.press("win")
+    time.sleep(0.4)
+    pyautogui.write(app_name)
+    time.sleep(0.3)
+    pyautogui.press("enter")
+
 
 def close_app(app_name: str):
-    app = app_name.lower().strip()
+    app = normalize_app_name(app_name)
 
-    possible_titles = {
-        "explorer": ["Проводник", "Explorer"],
-        "проводник": ["Проводник", "Explorer"],
+    closed = close_window_by_title(app_name)
 
-        "notepad": ["Блокнот", "Notepad"],
-        "блокнот": ["Блокнот", "Notepad"],
+    if closed:
+        return
 
-        "calculator": ["Калькулятор", "Calculator"],
-        "калькулятор": ["Калькулятор", "Calculator"],
+    killed = terminate_process_by_name(app)
 
-        "chrome": ["Chrome"],
-        "edge": ["Edge"],
+    if killed:
+        return
 
-        "taskmgr": ["Диспетчер задач", "Task Manager"],
-        "диспетчер задач": ["Диспетчер задач", "Task Manager"],
-    }
+    raise ValueError(f"Не удалось найти окно или процесс для: {app_name}")
 
-    titles = possible_titles.get(app)
 
-    if not titles:
-        raise ValueError(f"Неизвестное приложение: {app_name}")
+def close_window_by_title(query: str) -> bool:
+    query = query.lower().strip()
+    normalized_query = normalize_app_name(query)
 
     windows = gw.getAllWindows()
 
-    found = False
+    best_window = None
+    best_score = 0
 
     for window in windows:
-        for title in titles:
-            if title.lower() in window.title.lower():
-                try:
-                    window.close()
-                    found = True
-                except Exception:
-                    pass
+        title = (window.title or "").lower().strip()
 
-    if not found:
-        raise ValueError(f"Окно приложения не найдено: {app_name}")
-    
+        if not title:
+            continue
+
+        score1 = fuzz.partial_ratio(query, title)
+        score2 = fuzz.partial_ratio(normalized_query, title)
+        score = max(score1, score2)
+
+        if score > best_score:
+            best_score = score
+            best_window = window
+
+    if best_window and best_score >= 55:
+        best_window.close()
+        return True
+
+    return False
+
+
+def terminate_process_by_name(app: str) -> bool:
+    hints = PROCESS_HINTS.get(app, [])
+    killed = False
+
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            name = (proc.info["name"] or "").lower()
+
+            if not name:
+                continue
+
+            if name in [h.lower() for h in hints]:
+                proc.terminate()
+                killed = True
+                continue
+
+            score = fuzz.partial_ratio(app, name)
+            if score >= 80:
+                proc.terminate()
+                killed = True
+
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    return killed
+
+
 def focus_app(app_name: str):
-    app = app_name.lower().strip()
-
-    possible_titles = {
-        "explorer": ["Проводник", "Explorer"],
-        "notepad": ["Блокнот", "Notepad"],
-        "calculator": ["Калькулятор", "Calculator"],
-        "chrome": ["Chrome"],
-        "taskmgr": ["Диспетчер задач", "Task Manager"],
-    }
-
-    titles = possible_titles.get(app)
-
-    if not titles:
-        raise ValueError(f"Неизвестное приложение: {app_name}")
+    query = app_name.lower().strip()
+    normalized_query = normalize_app_name(query)
 
     windows = gw.getAllWindows()
 
+    best_window = None
+    best_score = 0
+
     for window in windows:
-        for title in titles:
-            if title.lower() in window.title.lower():
-                window.activate()
-                return
+        title = (window.title or "").lower().strip()
+
+        if not title:
+            continue
+
+        score1 = fuzz.partial_ratio(query, title)
+        score2 = fuzz.partial_ratio(normalized_query, title)
+        score = max(score1, score2)
+
+        if score > best_score:
+            best_score = score
+            best_window = window
+
+    if best_window and best_score >= 55:
+        best_window.activate()
+        return
 
     raise ValueError(f"Окно не найдено: {app_name}")
 
@@ -137,6 +230,12 @@ def execute_tool_call(call: dict):
     if tool == "open_app":
         return open_app(call["app"])
 
+    if tool == "close_app":
+        return close_app(call["app"])
+
+    if tool == "focus_app":
+        return focus_app(call["app"])
+
     if tool == "press_hotkey":
         return press_hotkey(call["keys"])
 
@@ -158,11 +257,5 @@ def execute_tool_call(call: dict):
 
     if tool == "refuse":
         raise ValueError(call.get("reason", "Модель отказалась"))
-    
-    if tool == "close_app":
-        return close_app(call["app"])
-
-    if tool == "focus_app":
-        return focus_app(call["app"])
 
     raise ValueError(f"Неизвестный tool: {tool}")
