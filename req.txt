@@ -1,0 +1,17 @@
+pip install requests pillow pyautogui keyboard mouse sounddevice numpy faster-whisper mss pyttsx3
+
+Если faster-whisper начнёт ныть про ctranslate2 или ffmpeg, тогда отдельно:
+
+pip install ctranslate2
+
+И поставить FFmpeg:
+
+FFmpeg Windows Builds
+
+Но для первого этапа можно даже временно без voice/speech части жить.
+
+Для pyautogui
+
+На Windows иногда надо:
+
+pip install pygetwindow pyscreeze pymsgbox pytweening
