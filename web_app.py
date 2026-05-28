@@ -3,11 +3,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from screen import take_screenshot
-from ollama_client import ask_ollama
-from safety import is_safe_user_command, validate_action
-from controller import execute_action
-from quick_actions import get_quick_action
+from safety import is_safe_user_command
+from agent_client import plan_command
+from tools import execute_tool_call
 
 
 app = FastAPI()
@@ -45,54 +43,39 @@ def run_command(data: CommandRequest):
             "message": reason
         }
 
-    quick_action = get_quick_action(command)
-
-    if quick_action:
-        valid, reason = validate_action(quick_action)
-        if not valid:
-            return {
-                "ok": False,
-                "type": "blocked",
-                "message": reason
-            }
-
-        execute_action(quick_action)
-
-        return {
-            "ok": True,
-            "type": "quick",
-            "message": "Быстрая команда выполнена автономно.",
-            "action": quick_action
-        }
-
-    screenshot_path = None
-
-    if data.use_screenshot:
-        screenshot_path = take_screenshot()
-
-    action = ask_ollama(command, screenshot_path)
-
-    valid, reason = validate_action(action)
-    if not valid:
+    try:
+        tool_call = plan_command(command)
+    except Exception as e:
         return {
             "ok": False,
-            "type": "ai_refused",
-            "message": reason,
-            "action": action
+            "type": "planner_error",
+            "message": f"Ошибка планирования: {e}"
         }
 
-    if data.auto_execute_ai:
-        execute_action(action)
-        executed = True
-    else:
-        executed = False
+    if tool_call.get("tool") == "refuse":
+        return {
+            "ok": False,
+            "type": "refuse",
+            "message": tool_call.get("reason", "Модель отказалась."),
+            "action": tool_call
+        }
+
+    try:
+        execute_tool_call(tool_call)
+    except Exception as e:
+        return {
+            "ok": False,
+            "type": "execute_error",
+            "message": f"Ошибка выполнения: {e}",
+            "action": tool_call
+        }
 
     return {
         "ok": True,
-        "type": "ai",
-        "message": "Qwen предложил действие.",
-        "action": action,
-        "executed": executed
+        "type": "tool",
+        "message": "Инструмент выполнен.",
+        "action": tool_call,
+        "executed": True
     }
 
 
