@@ -1,6 +1,7 @@
 import time
 import subprocess
 import pyautogui
+import pygetwindow as gw
 
 
 pyautogui.FAILSAFE = True
@@ -38,6 +39,69 @@ def open_app(app_name: str):
         raise ValueError(f"Приложение не разрешено или неизвестно: {app_name}")
 
     subprocess.Popen(target, shell=True)
+
+def close_app(app_name: str):
+    app = app_name.lower().strip()
+
+    possible_titles = {
+        "explorer": ["Проводник", "Explorer"],
+        "проводник": ["Проводник", "Explorer"],
+
+        "notepad": ["Блокнот", "Notepad"],
+        "блокнот": ["Блокнот", "Notepad"],
+
+        "calculator": ["Калькулятор", "Calculator"],
+        "калькулятор": ["Калькулятор", "Calculator"],
+
+        "chrome": ["Chrome"],
+        "edge": ["Edge"]
+    }
+
+    titles = possible_titles.get(app)
+
+    if not titles:
+        raise ValueError(f"Неизвестное приложение: {app_name}")
+
+    windows = gw.getAllWindows()
+
+    found = False
+
+    for window in windows:
+        for title in titles:
+            if title.lower() in window.title.lower():
+                try:
+                    window.close()
+                    found = True
+                except Exception:
+                    pass
+
+    if not found:
+        raise ValueError(f"Окно приложения не найдено: {app_name}")
+    
+def focus_app(app_name: str):
+    app = app_name.lower().strip()
+
+    possible_titles = {
+        "explorer": ["Проводник", "Explorer"],
+        "notepad": ["Блокнот", "Notepad"],
+        "calculator": ["Калькулятор", "Calculator"],
+        "chrome": ["Chrome"],
+    }
+
+    titles = possible_titles.get(app)
+
+    if not titles:
+        raise ValueError(f"Неизвестное приложение: {app_name}")
+
+    windows = gw.getAllWindows()
+
+    for window in windows:
+        for title in titles:
+            if title.lower() in window.title.lower():
+                window.activate()
+                return
+
+    raise ValueError(f"Окно не найдено: {app_name}")
 
 
 def press_hotkey(keys: list[str]):
@@ -87,5 +151,11 @@ def execute_tool_call(call: dict):
 
     if tool == "refuse":
         raise ValueError(call.get("reason", "Модель отказалась"))
+    
+    if tool == "close_app":
+        return close_app(call["app"])
+
+    if tool == "focus_app":
+        return focus_app(call["app"])
 
     raise ValueError(f"Неизвестный tool: {tool}")
