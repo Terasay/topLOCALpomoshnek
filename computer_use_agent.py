@@ -3,12 +3,24 @@ import json
 import re
 import time
 import subprocess
+from pathlib import Path
+
 import requests
 
 try:
     import pyperclip
 except Exception:
     pyperclip = None
+
+try:
+    import pyautogui
+except Exception:
+    pyautogui = None
+
+try:
+    from pywinauto.keyboard import send_keys as pywinauto_send_keys
+except Exception:
+    pywinauto_send_keys = None
 
 from screen import take_screenshot
 from tools import execute_tool_call
@@ -18,6 +30,9 @@ try:
     from agent_client import plan_command
 except Exception:
     plan_command = None
+
+
+LAST_TARGET_APP = None
 
 
 ALLOWED_TOOLS = {
@@ -184,19 +199,6 @@ def normalize_keys(keys):
 
 
 def normalize_action(data) -> dict:
-    """
-    Приводит ответы модели к одному формату:
-
-    {
-        "done": false,
-        "comment": "...",
-        "action": {
-            "tool": "...",
-            ...
-        }
-    }
-    """
-
     if not isinstance(data, dict):
         return {
             "done": False,
@@ -341,16 +343,6 @@ def detect_app_in_text(text: str) -> str:
 
 
 def build_fast_local_plan(user_goal: str):
-    """
-    Быстрый локальный план без нейросети.
-
-    Простые команды выполняются тут:
-    - открой блокнот
-    - напиши в блокнот привет
-    - закрой блокнот
-    - сохрани файл
-    """
-
     original = str(user_goal or "").strip()
     text = original.lower()
 
@@ -376,7 +368,7 @@ def build_fast_local_plan(user_goal: str):
         return {
             "steps": [
                 {"tool": "open_or_focus_app", "app": app},
-                {"tool": "wait", "seconds": 0.6},
+                {"tool": "wait", "seconds": 0.5},
                 {"tool": "type_text", "text": typed_text},
             ]
         }
@@ -398,7 +390,7 @@ def build_fast_local_plan(user_goal: str):
         return {
             "steps": [
                 {"tool": "open_or_focus_app", "app": app},
-                {"tool": "wait", "seconds": 0.6},
+                {"tool": "wait", "seconds": 0.5},
                 {"tool": "type_text", "text": typed_text},
             ]
         }
@@ -627,41 +619,87 @@ def validate_agent_action(action: dict):
     return True
 
 
-def focus_existing_window(app: str) -> bool:
-    """
-    Пытается найти уже открытое окно и сфокусировать его.
-    Если pygetwindow не установлен или окно не найдено — просто вернёт False.
-    """
-
+def find_existing_window(app: str):
     app = normalize_app_name(app)
     titles = WINDOW_TITLES.get(app, [app])
 
     try:
         import pygetwindow as gw
     except Exception:
+        return None
+
+    try:
+        all_windows = gw.getAllWindows()
+
+        for expected_title in titles:
+            expected_title = str(expected_title or "").lower()
+
+            for window in all_windows:
+                title = str(getattr(window, "title", "") or "").lower()
+
+                if not title:
+                    continue
+
+                if expected_title and expected_title in title:
+                    return window
+
+    except Exception:
+        return None
+
+    return None
+
+
+def focus_existing_window(app: str) -> bool:
+    window = find_existing_window(app)
+
+    if not window:
         return False
 
     try:
-        for title in titles:
-            windows = gw.getWindowsWithTitle(title)
+        if window.isMinimized:
+            window.restore()
 
-            for window in windows:
-                if not window:
-                    continue
+        window.activate()
+        time.sleep(0.35)
+        return True
 
-                try:
-                    if window.isMinimized:
-                        window.restore()
-
-                    window.activate()
-                    time.sleep(0.25)
-                    return True
-                except Exception:
-                    continue
     except Exception:
         return False
 
-    return False
+
+def click_inside_window(app: str) -> bool:
+    if pyautogui is None:
+        return False
+
+    window = find_existing_window(app)
+
+    if not window:
+        return False
+
+    try:
+        if window.isMinimized:
+            window.restore()
+
+        window.activate()
+        time.sleep(0.25)
+
+        left = int(window.left)
+        top = int(window.top)
+        width = int(window.width)
+        height = int(window.height)
+
+        x = left + max(120, min(width // 2, width - 80))
+        y = top + max(120, min(height // 2, height - 80))
+
+        if x <= 5 and y <= 5:
+            return False
+
+        pyautogui.click(x, y)
+        time.sleep(0.2)
+        return True
+
+    except Exception:
+        return False
 
 
 def open_application(app: str) -> bool:
@@ -677,11 +715,11 @@ def open_application(app: str) -> bool:
             subprocess.Popen([command], shell=False)
             time.sleep(1.0)
             focus_existing_window(app)
+            click_inside_window(app)
             return True
         except Exception:
             pass
 
-    # Запасной способ через Win+R.
     try:
         execute_tool_call({"tool": "press_hotkey", "keys": ["win", "r"]})
         time.sleep(0.25)
@@ -690,6 +728,7 @@ def open_application(app: str) -> bool:
         execute_tool_call({"tool": "press_key", "key": "enter"})
         time.sleep(1.0)
         focus_existing_window(app)
+        click_inside_window(app)
         return True
     except Exception:
         return False
@@ -702,17 +741,22 @@ def close_application(app: str) -> bool:
         focus_existing_window(app)
 
     try:
-        execute_tool_call({"tool": "press_hotkey", "keys": ["alt", "f4"]})
+        if pyautogui is not None:
+            pyautogui.hotkey("alt", "f4")
+        else:
+            execute_tool_call({"tool": "press_hotkey", "keys": ["alt", "f4"]})
+
         time.sleep(0.3)
         return True
     except Exception:
         return False
 
 
-def paste_text(text: str):
+def write_text_to_notepad_file(text: str):
     """
-    Ввод текста через буфер обмена.
-    Это нужно, потому что pyautogui/keyboard часто не печатают кириллицу нормально.
+    Самый надёжный режим для Блокнота:
+    создаём txt-файл, записываем туда текст и открываем его через notepad.exe.
+    Никакого фокуса, буфера и капризов Windows.
     """
 
     text = str(text or "")
@@ -720,33 +764,77 @@ def paste_text(text: str):
     if not text:
         return
 
+    file_path = Path.cwd() / "local_notepad_text.txt"
+
+    # utf-8-sig, чтобы Блокнот точно не устроил цирк с кодировкой.
+    file_path.write_text(text, encoding="utf-8-sig")
+
+    subprocess.Popen(["notepad.exe", str(file_path)], shell=False)
+    time.sleep(0.8)
+
+
+def paste_text(text: str, target_app: str = ""):
+    text = str(text or "")
+
+    if not text:
+        return
+
+    target_app = normalize_app_name(target_app)
+
+    if target_app == "notepad":
+        write_text_to_notepad_file(text)
+        return
+
     if pyperclip is None:
         raise RuntimeError(
-            "Не установлен pyperclip. Выполни команду: py -3.11 -m pip install pyperclip"
+            "Не установлен pyperclip. Выполни: py -3.11 -m pip install pyperclip"
         )
 
+    if target_app:
+        focus_existing_window(target_app)
+        click_inside_window(target_app)
+        time.sleep(0.25)
+
     pyperclip.copy(text)
-    time.sleep(0.15)
-
-    execute_tool_call({
-        "tool": "press_hotkey",
-        "keys": ["ctrl", "v"]
-    })
-
     time.sleep(0.2)
+
+    if pywinauto_send_keys is not None:
+        try:
+            pywinauto_send_keys("^v")
+            time.sleep(0.25)
+            return
+        except Exception:
+            pass
+
+    if pyautogui is not None:
+        pyautogui.hotkey("ctrl", "v")
+    else:
+        execute_tool_call({
+            "tool": "press_hotkey",
+            "keys": ["ctrl", "v"]
+        })
+
+    time.sleep(0.25)
 
 
 def execute_normalized_action(action: dict):
+    global LAST_TARGET_APP
+
     tool = action.get("tool")
 
     if tool == "type_text":
-        paste_text(action.get("text", ""))
+        paste_text(action.get("text", ""), LAST_TARGET_APP)
         return
 
     if tool == "open_or_focus_app":
         app = action.get("app", "")
+        LAST_TARGET_APP = app
 
+        # Для Блокнота не обязательно открывать пустое окно заранее,
+        # если следующий шаг будет type_text. Но если пользователь просто сказал
+        # "открой блокнот", это всё равно откроет Блокнот.
         if focus_existing_window(app):
+            click_inside_window(app)
             return
 
         if not open_application(app):
@@ -754,24 +842,29 @@ def execute_normalized_action(action: dict):
 
         time.sleep(0.5)
         focus_existing_window(app)
+        click_inside_window(app)
         return
 
     if tool == "open_app":
         app = action.get("app", "")
+        LAST_TARGET_APP = app
 
         if not open_application(app):
             raise RuntimeError(f"Не удалось открыть приложение: {app}")
 
         time.sleep(0.5)
         focus_existing_window(app)
+        click_inside_window(app)
         return
 
     if tool == "focus_app":
         app = action.get("app", "")
+        LAST_TARGET_APP = app
 
         if not focus_existing_window(app):
             raise RuntimeError(f"Не удалось переключиться на приложение: {app}")
 
+        click_inside_window(app)
         return
 
     if tool == "close_app":
@@ -779,6 +872,9 @@ def execute_normalized_action(action: dict):
 
         if not close_application(app):
             raise RuntimeError(f"Не удалось закрыть приложение: {app}")
+
+        if LAST_TARGET_APP == app:
+            LAST_TARGET_APP = None
 
         return
 
@@ -828,14 +924,6 @@ def execute_steps(plan: dict, write, source_name: str = "План"):
 
 
 def run_planner_steps(user_goal: str, write):
-    """
-    Сначала пробуем:
-    1. быстрый локальный план без нейросети;
-    2. текстовый планировщик agent_client.py.
-
-    Только если оба не справились, запускаем зрительного агента.
-    """
-
     fast_plan = build_fast_local_plan(user_goal)
 
     if fast_plan is not None:
