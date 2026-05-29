@@ -35,3 +35,14 @@ ollama pull qwen2.5:1.5b
 
 
 py -3.11 -m pip install pygetwindow
+
+
+py -3.11 -m pip install pywinauto pyperclip pyautogui pygetwindow
+
+
+py -3.11 -m pip install opencv-python mediapipe numpy
+
+Если mediapipe начнёт истерить из-за numpy, тогда:
+
+py -3.11 -m pip install "numpy<2"
+py -3.11 -m pip install mediapipe opencv-python

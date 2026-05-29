@@ -1,43 +1,72 @@
 import sys
 import time
 import math
+import urllib.request
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
 
 
 CAMERA_INDEX = 0
-
 WINDOW_NAME = "LOCAL Hand Tracker"
 
 MAX_HANDS = 2
-
-# Чувствительность движения.
-# Меньше число = сильнее реагирует на мелкие движения.
 MOVEMENT_THRESHOLD = 7.0
-
-# Через сколько секунд без движения писать "рука на месте".
 STILL_AFTER_SECONDS = 0.35
+
+MODEL_PATH = Path(__file__).resolve().parent / "hand_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 
 FINGER_TIPS = {
-    4: "Большой",
-    8: "Указательный",
-    12: "Средний",
-    16: "Безымянный",
-    20: "Мизинец",
+    4: "Thumb",
+    8: "Index",
+    12: "Middle",
+    16: "Ring",
+    20: "Pinky",
 }
 
 
-# OpenCV использует BGR, не RGB.
-# Потому что зачем делать нормально.
 FINGER_COLORS = {
-    4: (0, 140, 255),      # большой
-    8: (0, 255, 255),      # указательный
-    12: (0, 255, 0),       # средний
-    16: (255, 120, 60),    # безымянный
-    20: (255, 0, 255),     # мизинец
+    4: (0, 140, 255),
+    8: (0, 255, 255),
+    12: (0, 255, 0),
+    16: (255, 120, 60),
+    20: (255, 0, 255),
 }
+
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+]
+
+
+def ensure_model_exists():
+    if MODEL_PATH.exists():
+        return True
+
+    print("Файл модели hand_landmarker.task не найден.")
+    print("Пробую скачать модель...")
+
+    try:
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print(f"Модель скачана: {MODEL_PATH}")
+        return True
+    except Exception as e:
+        print("Не удалось скачать модель автоматически.")
+        print(f"Ошибка: {e}")
+        print()
+        print("Скачай файл вручную и положи рядом с hand_tracker.py:")
+        print(MODEL_URL)
+        print()
+        print(f"Итоговый путь должен быть: {MODEL_PATH}")
+        return False
 
 
 def distance(p1, p2) -> float:
@@ -59,7 +88,7 @@ def landmark_to_pixel(landmark, width: int, height: int):
 def get_hand_points(hand_landmarks, width: int, height: int):
     points = []
 
-    for landmark in hand_landmarks.landmark:
+    for landmark in hand_landmarks:
         points.append(landmark_to_pixel(landmark, width, height))
 
     return points
@@ -126,20 +155,39 @@ def draw_panel(frame, status: str, fps: int, hands_count: int):
     )
 
 
+def draw_connections(frame, points):
+    for start, end in HAND_CONNECTIONS:
+        if start >= len(points) or end >= len(points):
+            continue
+
+        cv2.line(
+            frame,
+            points[start],
+            points[end],
+            (180, 180, 180),
+            2,
+            cv2.LINE_AA
+        )
+
+
+def draw_all_landmarks(frame, points):
+    for point in points:
+        cv2.circle(frame, point, 4, (230, 230, 230), -1)
+
+
 def draw_finger_tips(frame, hand_landmarks, width: int, height: int):
     for tip_id, finger_name in FINGER_TIPS.items():
-        landmark = hand_landmarks.landmark[tip_id]
+        if tip_id >= len(hand_landmarks):
+            continue
+
+        landmark = hand_landmarks[tip_id]
         x, y = landmark_to_pixel(landmark, width, height)
 
         color = FINGER_COLORS.get(tip_id, (255, 255, 255))
 
-        # Основной круг на кончике пальца.
         cv2.circle(frame, (x, y), 13, color, -1)
-
-        # Белая обводка.
         cv2.circle(frame, (x, y), 17, (255, 255, 255), 2)
 
-        # Подпись.
         cv2.putText(
             frame,
             finger_name,
@@ -170,16 +218,34 @@ def draw_hand_center(frame, center, hand_index: int):
     )
 
 
+def create_landmarker():
+    BaseOptions = mp.tasks.BaseOptions
+    HandLandmarker = mp.tasks.vision.HandLandmarker
+    HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+    VisionRunningMode = mp.tasks.vision.RunningMode
+
+    options = HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
+        running_mode=VisionRunningMode.VIDEO,
+        num_hands=MAX_HANDS,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+    return HandLandmarker.create_from_options(options)
+
+
 def run_hand_tracker(camera_index: int = 0):
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
-    mp_styles = mp.solutions.drawing_styles
+    if not ensure_model_exists():
+        return
 
     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
 
     if not cap.isOpened():
         print(f"Не удалось открыть камеру с индексом {camera_index}.")
         print("Попробуй другой индекс:")
+        print("py -3.11 hand_tracker.py 0")
         print("py -3.11 hand_tracker.py 1")
         print("py -3.11 hand_tracker.py 2")
         return
@@ -190,17 +256,21 @@ def run_hand_tracker(camera_index: int = 0):
 
     previous_centers = {}
     last_motion_time = 0.0
-
     previous_frame_time = time.time()
+    start_time = time.time()
 
-    with mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=MAX_HANDS,
-        model_complexity=1,
-        min_detection_confidence=0.65,
-        min_tracking_confidence=0.65,
-    ) as hands:
+    try:
+        landmarker = create_landmarker()
+    except Exception as e:
+        cap.release()
+        print("Не удалось создать HandLandmarker.")
+        print(f"Ошибка: {e}")
+        print()
+        print("Проверь, что рядом с hand_tracker.py есть файл:")
+        print(MODEL_PATH)
+        return
 
+    with landmarker:
         while True:
             ok, frame = cap.read()
 
@@ -208,27 +278,37 @@ def run_hand_tracker(camera_index: int = 0):
                 print("Не удалось получить кадр с камеры.")
                 break
 
-            # Зеркалим, чтобы рука двигалась как в зеркале.
             frame = cv2.flip(frame, 1)
 
             height, width = frame.shape[:2]
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = hands.process(rgb)
+
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=rgb
+            )
+
+            timestamp_ms = int((time.time() - start_time) * 1000)
+
+            result = landmarker.detect_for_video(
+                mp_image,
+                timestamp_ms
+            )
 
             now = time.time()
             fps = int(1.0 / max(now - previous_frame_time, 0.001))
             previous_frame_time = now
 
-            status = "Рук не видно"
+            status = "No hands"
             hands_count = 0
             current_centers = {}
 
-            if result.multi_hand_landmarks:
-                hands_count = len(result.multi_hand_landmarks)
+            if result.hand_landmarks:
+                hands_count = len(result.hand_landmarks)
                 total_movement = 0.0
 
-                for hand_index, hand_landmarks in enumerate(result.multi_hand_landmarks):
+                for hand_index, hand_landmarks in enumerate(result.hand_landmarks):
                     points = get_hand_points(hand_landmarks, width, height)
                     center = get_hand_center(points)
 
@@ -237,29 +317,19 @@ def run_hand_tracker(camera_index: int = 0):
                     previous_center = previous_centers.get(hand_index)
                     total_movement += distance(center, previous_center)
 
-                    # Скелет руки.
-                    mp_drawing.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_styles.get_default_hand_landmarks_style(),
-                        mp_styles.get_default_hand_connections_style(),
-                    )
-
-                    # Круги на кончиках пальцев.
+                    draw_connections(frame, points)
+                    draw_all_landmarks(frame, points)
                     draw_finger_tips(frame, hand_landmarks, width, height)
-
-                    # Центр ладони.
                     draw_hand_center(frame, center, hand_index)
 
                 if total_movement > MOVEMENT_THRESHOLD:
                     last_motion_time = now
-                    status = "Рука движется"
+                    status = "Moving"
                 else:
                     if now - last_motion_time > STILL_AFTER_SECONDS:
-                        status = "Рука на месте"
+                        status = "Still"
                     else:
-                        status = "Рука движется"
+                        status = "Moving"
 
             previous_centers = current_centers
 
