@@ -31,8 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from safety import is_safe_user_command
-from agent_client import plan_command
-from tools import execute_plan
+from computer_use_agent import run_desktop_agent
 from voice import listen_ru
 
 
@@ -122,35 +121,19 @@ class CommandWorker(QThread):
                 self.log.emit(f"Команда заблокирована: {reason}", "error")
                 return
 
-            self.log.emit("Команда передана планировщику Qwen.", "info")
+            self.log.emit("Команда передана desktop-агенту.", "info")
 
-            raw_plan = plan_command(command)
-            plan = self.normalize_plan(raw_plan)
+            success = run_desktop_agent(
+                user_goal=command,
+                log=lambda message, kind="info": self.log.emit(message, kind),
+                max_steps=8
+            )
 
-            self.log.emit("План модели:", "info")
-            self.log.emit(json.dumps(plan, ensure_ascii=False, indent=2), "code")
-
-            steps = plan.get("steps", [])
-            if not steps:
-                self.log.emit("План пустой.", "error")
-                return
-
-            first_step = steps[0]
-            if first_step.get("tool") == "refuse":
-                self.log.emit(
-                    first_step.get("reason", "Модель отказалась выполнять команду."),
-                    "error"
-                )
-                return
-
-            if not self.auto_execute_model:
-                self.log.emit(
-                    "Автовыполнение Qwen выключено. План показан, но не выполнен.",
-                    "warning"
-                )
-                return
-
-            execute_plan(plan)
+            if success:
+                self.log.emit("Задача агента выполнена.", "success")
+            else:
+                self.log.emit("Задача агента не выполнена.", "warning")
+                
             self.log.emit("План выполнен.", "success")
             success = True
 

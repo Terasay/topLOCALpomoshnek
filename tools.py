@@ -82,7 +82,7 @@ OPEN_COMMANDS = {
 
 PROCESS_HINTS = {
     "explorer": ["explorer.exe"],
-    "notepad": ["notepad.exe"],
+    "notepad": ["notepad.exe", "Notepad.exe"],
     "calculator": ["calculator.exe", "calc.exe"],
     "paint": ["mspaint.exe", "paint.exe"],
     "chrome": ["chrome.exe"],
@@ -95,7 +95,7 @@ PROCESS_HINTS = {
 
 TITLE_HINTS = {
     "explorer": ["проводник", "explorer"],
-    "notepad": ["блокнот", "notepad"],
+    "notepad": ["блокнот", "notepad", "без имени", "untitled"],
     "calculator": ["калькулятор", "calculator"],
     "paint": ["paint", "пейнт"],
     "chrome": ["chrome"],
@@ -138,6 +138,17 @@ def normalize_app_name(app_name: str) -> str:
 
     return app
 
+
+def move_mouse(x: int, y: int):
+    pyautogui.moveTo(int(x), int(y), duration=0.15)
+
+
+def double_click_position(x: int, y: int, button: str = "left"):
+    pyautogui.doubleClick(x=int(x), y=int(y), button=button)
+
+
+def scroll(amount: int):
+    pyautogui.scroll(int(amount))
 
 def get_visible_windows() -> list[dict]:
     result = []
@@ -202,7 +213,7 @@ def find_window_for_app(app_name: str) -> dict | None:
     title_hints = [x.lower() for x in TITLE_HINTS.get(app, [])]
 
     # 1. Сначала ищем по процессу. Это точнее, чем title.
-    for window in windows:
+    for window in reversed(windows):
         proc = window["process"].lower()
 
         if proc in process_hints:
@@ -212,7 +223,7 @@ def find_window_for_app(app_name: str) -> dict | None:
     best_window = None
     best_score = 0
 
-    for window in windows:
+    for window in reversed(windows):
         title = window["title"].lower()
 
         scores = []
@@ -547,6 +558,19 @@ def wait(seconds: float = 1):
 
 def execute_tool_call(call: dict):
     tool = call.get("tool")
+
+    if tool == "move_mouse":
+        return move_mouse(call["x"], call["y"])
+
+    if tool == "double_click_position":
+        return double_click_position(
+            call["x"],
+            call["y"],
+            call.get("button", "left")
+        )
+
+    if tool == "scroll":
+        return scroll(call["amount"])
 
     if tool == "open_app":
         return open_app(call["app"])
