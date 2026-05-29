@@ -7,6 +7,8 @@ import pygetwindow as gw
 import psutil
 import pyperclip
 from rapidfuzz import fuzz
+import json
+
 
 
 pyautogui.FAILSAFE = True
@@ -154,19 +156,112 @@ def launch_by_search(app_name: str):
     except Exception:
         pass
 
-    pyautogui.press("win")
-    time.sleep(0.35)
+    # Win+S надёжнее, чем просто Win.
+    pyautogui.hotkey("win", "s")
+    time.sleep(0.7)
 
-    # Вставка через буфер обмена не зависит от русской/английской раскладки.
     pyperclip.copy(app_name)
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.35)
+    time.sleep(0.8)
+
     pyautogui.press("enter")
 
     try:
         pyperclip.copy(old_clipboard)
     except Exception:
         pass
+
+
+START_APPS_CACHE = None
+
+
+def get_start_apps() -> list[dict]:
+    global START_APPS_CACHE
+
+    if START_APPS_CACHE is not None:
+        return START_APPS_CACHE
+
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json"
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=10
+        )
+
+        if result.returncode != 0 or not result.stdout.strip():
+            START_APPS_CACHE = []
+            return START_APPS_CACHE
+
+        data = json.loads(result.stdout)
+
+        if isinstance(data, dict):
+            data = [data]
+
+        START_APPS_CACHE = data
+        return START_APPS_CACHE
+
+    except Exception:
+        START_APPS_CACHE = []
+        return START_APPS_CACHE
+
+
+def find_start_app(query: str) -> dict | None:
+    query = query.lower().strip()
+    apps = get_start_apps()
+
+    best_app = None
+    best_score = 0
+
+    for app in apps:
+        name = str(app.get("Name", "")).lower().strip()
+        app_id = str(app.get("AppID", "")).strip()
+
+        if not name or not app_id:
+            continue
+
+        if query == name:
+            return app
+
+        if query in name:
+            return app
+
+        score = fuzz.partial_ratio(query, name)
+
+        if score > best_score:
+            best_score = score
+            best_app = app
+
+    if best_app and best_score >= 70:
+        return best_app
+
+    return None
+
+
+def launch_start_app(app_name: str) -> bool:
+    app = find_start_app(app_name)
+
+    if not app:
+        return False
+
+    app_id = app.get("AppID")
+
+    if not app_id:
+        return False
+
+    subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"])
+    return True
 
 
 def open_app(app_name: str):
@@ -189,6 +284,14 @@ def open_app(app_name: str):
             return
         except Exception:
             pass
+
+    # Сначала пробуем запуск через список приложений Windows.
+    # Это нормальный путь для Copilot, Store, UWP-приложений и прочего добра.
+    if launch_start_app(app_name):
+        return
+
+    if launch_start_app(app):
+        return
 
     # Последний fallback: Windows Search.
     launch_by_search(app_name)
