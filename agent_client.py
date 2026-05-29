@@ -116,8 +116,12 @@ explorer, notepad, calculator, chrome, edge, paint, settings
             {"role": "user", "content": user_command}
         ],
         "stream": False,
+        "format": "json",
+        "keep_alive": "30m",
         "options": {
-            "temperature": 0
+            "temperature": 0,
+            "num_predict": 80,
+            "num_ctx": 1024
         }
     }
 
