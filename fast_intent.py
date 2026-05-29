@@ -1,5 +1,11 @@
 from rapidfuzz import fuzz
 
+WRITE_WORDS = [
+    "напиши", "написать", "напечатай", "напечатать",
+    "введи", "ввести", "запиши", "записать",
+    "write", "type", "print"
+]
+
 
 OPEN_WORDS = [
     "открой", "открыть", "запусти", "запустить", "включи", "включить",
@@ -154,8 +160,107 @@ def find_action(text: str) -> tuple[str | None, str]:
     return None, lowered
 
 
+def strip_outer_quotes(text: str) -> str:
+    text = text.strip()
+
+    quote_pairs = [
+        ('"', '"'),
+        ("'", "'"),
+        ("«", "»"),
+        ("“", "”"),
+    ]
+
+    for left, right in quote_pairs:
+        if text.startswith(left) and text.endswith(right):
+            return text[1:-1].strip()
+
+    return text
+
+
+def extract_write_command(command: str) -> dict | None:
+    text = clean_text(command)
+
+    used_word = None
+
+    for word in sorted(WRITE_WORDS, key=len, reverse=True):
+        word = clean_text(word)
+
+        if text == word:
+            return None
+
+        if text.startswith(word + " "):
+            used_word = word
+            break
+
+    if not used_word:
+        return None
+
+    rest = text[len(used_word):].strip()
+
+    if not rest:
+        return None
+
+    # Убираем лишнюю вежливую шелуху, потому что люди почему-то разговаривают словами.
+    for junk in ["пожалуйста", "плиз"]:
+        rest = rest.replace(junk, "").strip()
+
+    aliases = sorted(APP_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for alias, app in aliases:
+        alias = clean_text(alias)
+
+        # Формат: "напиши в блокнот привет мир"
+        prefix = f"в {alias} "
+        if rest.startswith(prefix):
+            text_part = rest[len(prefix):].strip()
+            if text_part:
+                return {
+                    "tool": "write_to_app",
+                    "app": app,
+                    "text": strip_outer_quotes(text_part)
+                }
+
+        # Формат: "напиши привет мир в блокнот"
+        suffix = f" в {alias}"
+        if rest.endswith(suffix):
+            text_part = rest[:-len(suffix)].strip()
+            if text_part:
+                return {
+                    "tool": "write_to_app",
+                    "app": app,
+                    "text": strip_outer_quotes(text_part)
+                }
+
+        # Формат: "напиши привет мир в блокнот сейчас"
+        middle = f" в {alias} "
+        if middle in rest:
+            before, after = rest.split(middle, 1)
+
+            before = before.strip()
+            after = after.strip()
+
+            text_part = before or after
+
+            if text_part:
+                return {
+                    "tool": "write_to_app",
+                    "app": app,
+                    "text": strip_outer_quotes(text_part)
+                }
+
+    # Если приложение не указано, печатаем в активное окно.
+    return {
+        "tool": "type_text",
+        "text": strip_outer_quotes(rest)
+    }
+
 def fast_plan(command: str) -> dict | None:
     text = clean_text(command)
+
+    write_action = extract_write_command(command)
+
+    if write_action:
+        return write_action
 
     if text in SPECIAL_COMMANDS:
         return SPECIAL_COMMANDS[text]

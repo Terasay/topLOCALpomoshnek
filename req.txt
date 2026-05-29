@@ -28,3 +28,7 @@ pip install scipy
 py -3.11 -m pip install psutil
 
 py -3.11 -m pip install PySide6 pyinstaller
+
+
+
+ollama pull qwen2.5:1.5b

@@ -1,4 +1,5 @@
 import sys
+import json
 import traceback
 from datetime import datetime
 
@@ -7,7 +8,6 @@ from PySide6.QtCore import (
     QThread,
     Signal,
     QTimer,
-    QSize,
     QPropertyAnimation,
     QEasingCurve,
 )
@@ -27,14 +27,12 @@ from PySide6.QtWidgets import (
     QMenu,
     QStyle,
     QScrollArea,
-    QSizePolicy,
     QGraphicsOpacityEffect,
 )
 
 from safety import is_safe_user_command
-from fast_intent import fast_plan
 from agent_client import plan_command
-from tools import execute_tool_call
+from tools import execute_plan
 from voice import listen_ru
 
 
@@ -89,6 +87,30 @@ class CommandWorker(QThread):
         self.command = command
         self.auto_execute_model = auto_execute_model
 
+    def normalize_plan(self, plan: dict) -> dict:
+        """
+        Поддерживает и новый формат {steps:[...]}, и старый формат {tool:...},
+        чтобы приложение не падало, если agent_client ещё не обновлён.
+        """
+        if not isinstance(plan, dict):
+            return {
+                "steps": [
+                    {"tool": "refuse", "reason": "Планировщик вернул не объект JSON."}
+                ]
+            }
+
+        if "steps" in plan and isinstance(plan["steps"], list):
+            return plan
+
+        if "tool" in plan:
+            return {"steps": [plan]}
+
+        return {
+            "steps": [
+                {"tool": "refuse", "reason": "Планировщик не вернул steps."}
+            ]
+        }
+
     def run(self):
         success = False
 
@@ -100,33 +122,36 @@ class CommandWorker(QThread):
                 self.log.emit(f"Команда заблокирована: {reason}", "error")
                 return
 
-            fast_action = fast_plan(command)
-
-            if fast_action:
-                self.log.emit("Команда распознана локально.", "info")
-                self.log.emit(str(fast_action), "code")
-                execute_tool_call(fast_action)
-                self.log.emit("Действие выполнено без Qwen.", "success")
-                success = True
-                return
-
             self.log.emit("Команда передана планировщику Qwen.", "info")
 
-            tool_call = plan_command(command)
+            raw_plan = plan_command(command)
+            plan = self.normalize_plan(raw_plan)
 
             self.log.emit("План модели:", "info")
-            self.log.emit(str(tool_call), "code")
+            self.log.emit(json.dumps(plan, ensure_ascii=False, indent=2), "code")
 
-            if tool_call.get("tool") == "refuse":
-                self.log.emit(tool_call.get("reason", "Модель отказалась выполнять команду."), "error")
+            steps = plan.get("steps", [])
+            if not steps:
+                self.log.emit("План пустой.", "error")
+                return
+
+            first_step = steps[0]
+            if first_step.get("tool") == "refuse":
+                self.log.emit(
+                    first_step.get("reason", "Модель отказалась выполнять команду."),
+                    "error"
+                )
                 return
 
             if not self.auto_execute_model:
-                self.log.emit("Автовыполнение команд модели выключено. Действие не выполнено.", "warning")
+                self.log.emit(
+                    "Автовыполнение Qwen выключено. План показан, но не выполнен.",
+                    "warning"
+                )
                 return
 
-            execute_tool_call(tool_call)
-            self.log.emit("Инструмент выполнен.", "success")
+            execute_plan(plan)
+            self.log.emit("План выполнен.", "success")
             success = True
 
         except Exception as e:
@@ -234,6 +259,7 @@ class LocalAssistantWindow(QMainWindow):
         self.command_worker = None
         self.voice_worker = None
         self.pending_voice_text = None
+        self.last_success = True
 
         self.build_ui()
         self.build_tray()
@@ -292,8 +318,8 @@ class LocalAssistantWindow(QMainWindow):
         section_title.setObjectName("sectionTitle")
 
         self.mode_text = QLabel(
-            "Быстрые команды выполняются сразу.\n"
-            "Сложные команды передаются Qwen, который выбирает инструмент."
+            "Команды передаются планировщику Qwen.\n"
+            "Qwen возвращает план из шагов, Python выполняет инструменты."
         )
         self.mode_text.setObjectName("sideText")
         self.mode_text.setWordWrap(True)
@@ -326,7 +352,7 @@ class LocalAssistantWindow(QMainWindow):
         header = QLabel("Управление компьютером")
         header.setObjectName("header")
 
-        desc = QLabel("Текстовая или голосовая команда. Без браузера, сервера и прочего инженерного шаманства.")
+        desc = QLabel("Текстовая или голосовая команда. План строит Qwen, действия выполняют системные инструменты.")
         desc.setObjectName("description")
 
         header_text.addWidget(header)
@@ -364,7 +390,7 @@ class LocalAssistantWindow(QMainWindow):
 
         self.command_input = QLineEdit()
         self.command_input.setObjectName("commandInput")
-        self.command_input.setPlaceholderText("Например: закрой Paint, открой проводник, переключись на Chrome")
+        self.command_input.setPlaceholderText("Например: напиши в блокнот привет мир, открой Paint, сохрани файл")
         self.command_input.returnPressed.connect(self.run_text_command)
 
         self.run_button = QPushButton("Выполнить")
@@ -474,7 +500,6 @@ class LocalAssistantWindow(QMainWindow):
             return
 
         self.write_log(f"> {command}", "user")
-
         self.set_busy(True, "Выполняю команду")
 
         self.command_worker = CommandWorker(
@@ -487,12 +512,10 @@ class LocalAssistantWindow(QMainWindow):
         self.command_worker.start()
 
     def on_command_done(self, success: bool):
-        if success:
-            self.status_dot.set_state("ready")
-        else:
-            self.status_dot.set_state("error")
-
         self.set_busy(False)
+        if not success:
+            self.status_dot.set_state("error")
+            self.status_label.setText("Ошибка выполнения")
 
     def run_voice_command(self):
         if self.voice_worker and self.voice_worker.isRunning():

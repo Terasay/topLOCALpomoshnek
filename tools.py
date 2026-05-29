@@ -423,9 +423,57 @@ def click_position(x: int, y: int, button: str = "left"):
 def wait(seconds: float = 1):
     time.sleep(seconds)
 
+def write_to_app(app_name: str, text: str):
+    app = normalize_app_name(app_name)
+
+    # Сначала пробуем переключиться на уже открытое окно.
+    try:
+        focus_app(app)
+        time.sleep(0.3)
+    except Exception:
+        # Если окна нет, открываем приложение.
+        open_app(app)
+        time.sleep(1.0)
+
+    type_text(text)
+
+
+def open_or_focus_app(app_name: str):
+    try:
+        focus_app(app_name)
+        time.sleep(0.3)
+        return
+    except Exception:
+        pass
+
+    open_app(app_name)
+    time.sleep(1.0)
+
+    try:
+        focus_app(app_name)
+        time.sleep(0.2)
+    except Exception:
+        pass
+
+
+def execute_plan(plan: dict):
+    steps = plan.get("steps", [])
+
+    if not steps:
+        raise ValueError("План пустой.")
+
+    for step in steps:
+        execute_tool_call(step)
+        time.sleep(0.15)
 
 def execute_tool_call(call: dict):
     tool = call.get("tool")
+
+    if tool == "open_or_focus_app":
+        return open_or_focus_app(call["app"])
+
+    if tool == "write_to_app":
+        return write_to_app(call["app"], call["text"])
 
     if tool == "open_app":
         return open_app(call["app"])
