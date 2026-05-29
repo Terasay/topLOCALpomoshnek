@@ -1,14 +1,22 @@
 import os
+import json
 import time
 import shutil
 import subprocess
-import pyautogui
-import pygetwindow as gw
+
 import psutil
+import pyautogui
 import pyperclip
 from rapidfuzz import fuzz
-import json
 
+try:
+    import win32gui
+    import win32con
+    import win32process
+except ImportError:
+    win32gui = None
+    win32con = None
+    win32process = None
 
 
 pyautogui.FAILSAFE = True
@@ -19,10 +27,6 @@ APP_ALIASES = {
     "проводник": "explorer",
     "explorer": "explorer",
     "file explorer": "explorer",
-    "store": "store",
-    "microsoft store": "store",
-    "магазин": "store",
-    "магазин microsoft": "store",
 
     "блокнот": "notepad",
     "notepad": "notepad",
@@ -46,6 +50,14 @@ APP_ALIASES = {
     "microsoft edge": "edge",
     "эдж": "edge",
 
+    "store": "store",
+    "microsoft store": "store",
+    "магазин": "store",
+    "магазин microsoft": "store",
+
+    "copilot": "copilot",
+    "копилот": "copilot",
+
     "taskmgr": "taskmgr",
     "диспетчер задач": "taskmgr",
     "task manager": "taskmgr",
@@ -62,21 +74,35 @@ OPEN_COMMANDS = {
     "paint": "mspaint.exe",
     "chrome": "chrome.exe",
     "edge": "microsoft-edge:",
+    "store": "ms-windows-store:",
     "taskmgr": "taskmgr.exe",
     "settings": "ms-settings:",
-    "store": "ms-windows-store:",
 }
 
 
 PROCESS_HINTS = {
-    # explorer.exe специально не убиваем, иначе можно снести оболочку Windows.
+    "explorer": ["explorer.exe"],
     "notepad": ["notepad.exe"],
     "calculator": ["calculator.exe", "calc.exe"],
     "paint": ["mspaint.exe", "paint.exe"],
     "chrome": ["chrome.exe"],
     "edge": ["msedge.exe"],
+    "store": ["WinStore.App.exe", "ApplicationFrameHost.exe"],
     "taskmgr": ["taskmgr.exe"],
     "settings": ["SystemSettings.exe"],
+}
+
+
+TITLE_HINTS = {
+    "explorer": ["проводник", "explorer"],
+    "notepad": ["блокнот", "notepad"],
+    "calculator": ["калькулятор", "calculator"],
+    "paint": ["paint", "пейнт"],
+    "chrome": ["chrome"],
+    "edge": ["edge"],
+    "store": ["microsoft store", "store", "магазин"],
+    "taskmgr": ["диспетчер задач", "task manager"],
+    "settings": ["settings", "параметры", "настройки"],
 }
 
 
@@ -97,26 +123,125 @@ BLOCKED_KILL_PROCESSES = {
 }
 
 
+START_APPS_CACHE = None
+
+
 def normalize_app_name(app_name: str) -> str:
-    app = app_name.lower().strip()
+    app = str(app_name).lower().strip()
 
     if app in APP_ALIASES:
         return APP_ALIASES[app]
 
-    best_key = None
+    for alias, canonical in APP_ALIASES.items():
+        if alias in app:
+            return canonical
+
+    return app
+
+
+def get_visible_windows() -> list[dict]:
+    result = []
+
+    if not win32gui or not win32process:
+        return result
+
+    def callback(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+
+        title = win32gui.GetWindowText(hwnd).strip()
+
+        if not title:
+            return
+
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            proc_name = psutil.Process(pid).name()
+        except Exception:
+            pid = None
+            proc_name = ""
+
+        result.append({
+            "hwnd": hwnd,
+            "title": title,
+            "pid": pid,
+            "process": proc_name,
+        })
+
+    win32gui.EnumWindows(callback, None)
+    return result
+
+
+def focus_hwnd(hwnd: int):
+    if not win32gui or not win32con:
+        return
+
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.1)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def close_hwnd(hwnd: int):
+    if not win32gui or not win32con:
+        return
+
+    try:
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    except Exception:
+        pass
+
+
+def find_window_for_app(app_name: str) -> dict | None:
+    app = normalize_app_name(app_name)
+    windows = get_visible_windows()
+
+    process_hints = [x.lower() for x in PROCESS_HINTS.get(app, [])]
+    title_hints = [x.lower() for x in TITLE_HINTS.get(app, [])]
+
+    # 1. Сначала ищем по процессу. Это точнее, чем title.
+    for window in windows:
+        proc = window["process"].lower()
+
+        if proc in process_hints:
+            return window
+
+    # 2. Потом ищем по заголовку.
+    best_window = None
     best_score = 0
 
-    for alias in APP_ALIASES:
-        score = fuzz.partial_ratio(app, alias)
+    for window in windows:
+        title = window["title"].lower()
+
+        scores = []
+
+        for hint in title_hints:
+            scores.append(fuzz.partial_ratio(hint, title))
+
+        scores.append(fuzz.partial_ratio(str(app_name).lower(), title))
+        scores.append(fuzz.partial_ratio(app, title))
+
+        score = max(scores)
 
         if score > best_score:
             best_score = score
-            best_key = alias
+            best_window = window
 
-    if best_key and best_score >= 75:
-        return APP_ALIASES[best_key]
+    if best_window and best_score >= 60:
+        return best_window
 
-    return app
+    return None
+
+
+def focus_app(app_name: str):
+    window = find_window_for_app(app_name)
+
+    if not window:
+        raise ValueError(f"Окно не найдено: {app_name}")
+
+    focus_hwnd(window["hwnd"])
 
 
 def find_exe_in_common_paths(exe_name: str) -> str | None:
@@ -129,9 +254,12 @@ def find_exe_in_common_paths(exe_name: str) -> str | None:
         os.environ.get("ProgramFiles"),
         os.environ.get("ProgramFiles(x86)"),
         os.environ.get("LOCALAPPDATA"),
+        os.environ.get("WINDIR"),
     ]
 
     possible_subpaths = [
+        "",
+        "System32",
         os.path.join("Microsoft", "Edge", "Application"),
         os.path.join("Google", "Chrome", "Application"),
     ]
@@ -146,33 +274,6 @@ def find_exe_in_common_paths(exe_name: str) -> str | None:
                 return candidate
 
     return None
-
-
-def launch_by_search(app_name: str):
-    old_clipboard = ""
-
-    try:
-        old_clipboard = pyperclip.paste()
-    except Exception:
-        pass
-
-    # Win+S надёжнее, чем просто Win.
-    pyautogui.hotkey("win", "s")
-    time.sleep(0.7)
-
-    pyperclip.copy(app_name)
-    pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.8)
-
-    pyautogui.press("enter")
-
-    try:
-        pyperclip.copy(old_clipboard)
-    except Exception:
-        pass
-
-
-START_APPS_CACHE = None
 
 
 def get_start_apps() -> list[dict]:
@@ -197,7 +298,8 @@ def get_start_apps() -> list[dict]:
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=10
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
 
         if result.returncode != 0 or not result.stdout.strip():
@@ -218,7 +320,7 @@ def get_start_apps() -> list[dict]:
 
 
 def find_start_app(query: str) -> dict | None:
-    query = query.lower().strip()
+    query = str(query).lower().strip()
     apps = get_start_apps()
 
     best_app = None
@@ -243,7 +345,7 @@ def find_start_app(query: str) -> dict | None:
             best_score = score
             best_app = app
 
-    if best_app and best_score >= 70:
+    if best_app and best_score >= 72:
         return best_app
 
     return None
@@ -260,8 +362,34 @@ def launch_start_app(app_name: str) -> bool:
     if not app_id:
         return False
 
-    subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"])
+    subprocess.Popen(
+        ["explorer.exe", f"shell:AppsFolder\\{app_id}"],
+        creationflags=subprocess.CREATE_NO_WINDOW
+    )
     return True
+
+
+def launch_by_search(app_name: str):
+    old_clipboard = ""
+
+    try:
+        old_clipboard = pyperclip.paste()
+    except Exception:
+        pass
+
+    pyautogui.hotkey("win", "s")
+    time.sleep(0.7)
+
+    pyperclip.copy(app_name)
+    pyautogui.hotkey("ctrl", "v")
+    time.sleep(0.8)
+
+    pyautogui.press("enter")
+
+    try:
+        pyperclip.copy(old_clipboard)
+    except Exception:
+        pass
 
 
 def open_app(app_name: str):
@@ -276,56 +404,78 @@ def open_app(app_name: str):
         exe_path = find_exe_in_common_paths(command)
 
         if exe_path:
-            subprocess.Popen([exe_path])
+            subprocess.Popen(
+                [exe_path],
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
             return
 
         try:
-            subprocess.Popen(command, shell=True)
+            subprocess.Popen(
+                command,
+                shell=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
             return
         except Exception:
             pass
 
-    # Сначала пробуем запуск через список приложений Windows.
-    # Это нормальный путь для Copilot, Store, UWP-приложений и прочего добра.
+    # UWP / Store / Copilot / прочие приложения из Пуска
     if launch_start_app(app_name):
         return
 
     if launch_start_app(app):
         return
 
-    # Последний fallback: Windows Search.
+    # Последний fallback
     launch_by_search(app_name)
 
 
-def close_window_by_title(query: str) -> bool:
-    query = query.lower().strip()
-    normalized = normalize_app_name(query)
+def wait_for_app_window(app_name: str, timeout: float = 5.0) -> bool:
+    start = time.time()
 
-    windows = gw.getAllWindows()
+    while time.time() - start < timeout:
+        window = find_window_for_app(app_name)
 
-    best_window = None
-    best_score = 0
+        if window:
+            focus_hwnd(window["hwnd"])
+            return True
 
-    for window in windows:
-        title = (window.title or "").lower().strip()
-
-        if not title:
-            continue
-
-        score = max(
-            fuzz.partial_ratio(query, title),
-            fuzz.partial_ratio(normalized, title)
-        )
-
-        if score > best_score:
-            best_score = score
-            best_window = window
-
-    if best_window and best_score >= 55:
-        best_window.close()
-        return True
+        time.sleep(0.25)
 
     return False
+
+
+def open_or_focus_app(app_name: str):
+    # Если уже открыто, просто фокусируем.
+    try:
+        focus_app(app_name)
+        time.sleep(0.25)
+        return
+    except Exception:
+        pass
+
+    open_app(app_name)
+
+    # После открытия обязательно ждём окно и фокусируем.
+    wait_for_app_window(app_name, timeout=6.0)
+
+    time.sleep(0.25)
+
+
+def close_app(app_name: str):
+    app = normalize_app_name(app_name)
+
+    window = find_window_for_app(app)
+
+    if window:
+        close_hwnd(window["hwnd"])
+        return
+
+    if terminate_process_by_name(app):
+        return
+
+    raise ValueError(f"Не удалось найти окно или процесс для: {app_name}")
 
 
 def terminate_process_by_name(app_name: str) -> bool:
@@ -349,10 +499,9 @@ def terminate_process_by_name(app_name: str) -> bool:
                 killed = True
                 continue
 
-            # Для неизвестных приложений fuzzy-убийство делаем осторожно.
             score = fuzz.partial_ratio(app, name)
 
-            if score >= 90:
+            if score >= 92:
                 proc.terminate()
                 killed = True
 
@@ -360,47 +509,6 @@ def terminate_process_by_name(app_name: str) -> bool:
             pass
 
     return killed
-
-
-def close_app(app_name: str):
-    if close_window_by_title(app_name):
-        return
-
-    if terminate_process_by_name(app_name):
-        return
-
-    raise ValueError(f"Не удалось найти окно или процесс для: {app_name}")
-
-
-def focus_app(app_name: str):
-    query = app_name.lower().strip()
-    normalized = normalize_app_name(query)
-
-    windows = gw.getAllWindows()
-
-    best_window = None
-    best_score = 0
-
-    for window in windows:
-        title = (window.title or "").lower().strip()
-
-        if not title:
-            continue
-
-        score = max(
-            fuzz.partial_ratio(query, title),
-            fuzz.partial_ratio(normalized, title)
-        )
-
-        if score > best_score:
-            best_score = score
-            best_window = window
-
-    if best_window and best_score >= 55:
-        best_window.activate()
-        return
-
-    raise ValueError(f"Окно не найдено: {app_name}")
 
 
 def press_hotkey(keys: list[str]):
@@ -412,8 +520,21 @@ def press_key(key: str):
 
 
 def type_text(text: str):
-    pyperclip.copy(text)
+    old_clipboard = ""
+
+    try:
+        old_clipboard = pyperclip.paste()
+    except Exception:
+        pass
+
+    pyperclip.copy(str(text))
+    time.sleep(0.1)
     pyautogui.hotkey("ctrl", "v")
+
+    try:
+        pyperclip.copy(old_clipboard)
+    except Exception:
+        pass
 
 
 def click_position(x: int, y: int, button: str = "left"):
@@ -423,60 +544,15 @@ def click_position(x: int, y: int, button: str = "left"):
 def wait(seconds: float = 1):
     time.sleep(seconds)
 
-def write_to_app(app_name: str, text: str):
-    app = normalize_app_name(app_name)
-
-    # Сначала пробуем переключиться на уже открытое окно.
-    try:
-        focus_app(app)
-        time.sleep(0.3)
-    except Exception:
-        # Если окна нет, открываем приложение.
-        open_app(app)
-        time.sleep(1.0)
-
-    type_text(text)
-
-
-def open_or_focus_app(app_name: str):
-    try:
-        focus_app(app_name)
-        time.sleep(0.3)
-        return
-    except Exception:
-        pass
-
-    open_app(app_name)
-    time.sleep(1.0)
-
-    try:
-        focus_app(app_name)
-        time.sleep(0.2)
-    except Exception:
-        pass
-
-
-def execute_plan(plan: dict):
-    steps = plan.get("steps", [])
-
-    if not steps:
-        raise ValueError("План пустой.")
-
-    for step in steps:
-        execute_tool_call(step)
-        time.sleep(0.15)
 
 def execute_tool_call(call: dict):
     tool = call.get("tool")
 
-    if tool == "open_or_focus_app":
-        return open_or_focus_app(call["app"])
-
-    if tool == "write_to_app":
-        return write_to_app(call["app"], call["text"])
-
     if tool == "open_app":
         return open_app(call["app"])
+
+    if tool == "open_or_focus_app":
+        return open_or_focus_app(call["app"])
 
     if tool == "close_app":
         return close_app(call["app"])
@@ -507,3 +583,14 @@ def execute_tool_call(call: dict):
         raise ValueError(call.get("reason", "Модель отказалась"))
 
     raise ValueError(f"Неизвестный tool: {tool}")
+
+
+def execute_plan(plan: dict):
+    steps = plan.get("steps", [])
+
+    if not steps:
+        raise ValueError("План пустой.")
+
+    for step in steps:
+        execute_tool_call(step)
+        time.sleep(0.2)
