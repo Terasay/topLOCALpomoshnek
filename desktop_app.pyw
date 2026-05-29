@@ -119,6 +119,7 @@ class CommandWorker(QThread):
             safe, reason = is_safe_user_command(command)
             if not safe:
                 self.log.emit(f"Команда заблокирована: {reason}", "error")
+                success = False
                 return
 
             self.log.emit("Команда передана desktop-агенту.", "info")
@@ -133,11 +134,9 @@ class CommandWorker(QThread):
                 self.log.emit("Задача агента выполнена.", "success")
             else:
                 self.log.emit("Задача агента не выполнена.", "warning")
-                
-            self.log.emit("План выполнен.", "success")
-            success = True
 
         except Exception as e:
+            success = False
             self.log.emit(f"Ошибка: {e}", "error")
             self.log.emit(traceback.format_exc(), "code")
         finally:

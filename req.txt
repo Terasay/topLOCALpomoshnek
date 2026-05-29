@@ -32,3 +32,6 @@ py -3.11 -m pip install PySide6 pyinstaller
 
 
 ollama pull qwen2.5:1.5b
+
+
+py -3.11 -m pip install pygetwindow
