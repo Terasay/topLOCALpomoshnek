@@ -26,3 +26,5 @@ pip install SpeechRecognition
 pip install scipy
 
 py -3.11 -m pip install psutil
+
+py -3.11 -m pip install PySide6 pyinstaller

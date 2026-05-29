@@ -1,2 +1,4 @@
 py -3.11 -m uvicorn web_app:app --reload
 http://127.0.0.1:8000
+
+new py -3.11 desktop_app.pyw
