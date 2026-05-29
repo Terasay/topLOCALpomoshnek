@@ -1,34 +1,37 @@
 from rapidfuzz import fuzz
-import psutil
-import pygetwindow as gw
 
 
 OPEN_WORDS = [
-    "открой", "открыть", "запусти", "запустить",
-    "включи", "включить"
+    "открой", "открыть", "запусти", "запустить", "включи", "включить",
+    "open", "start", "run", "launch"
 ]
 
 CLOSE_WORDS = [
-    "закрой", "закрыть", "выключи", "выключить",
-    "убери", "заверши", "завершить"
+    "закрой", "закрыть", "выключи", "выключить", "убери",
+    "заверши", "завершить",
+    "close", "quit", "exit", "kill", "terminate", "stop", "end"
 ]
 
 FOCUS_WORDS = [
-    "переключись", "переключи", "перейди",
-    "покажи", "открой окно"
+    "переключись", "переключи", "перейди", "покажи", "выведи",
+    "focus", "switch to", "show", "activate", "go to"
 ]
 
 
 APP_ALIASES = {
     "проводник": "explorer",
     "explorer": "explorer",
+    "file explorer": "explorer",
 
     "paint": "paint",
+    "pa": "paint",
     "паинт": "paint",
     "пейнт": "paint",
+    "mspaint": "paint",
 
     "блокнот": "notepad",
     "notepad": "notepad",
+    "note pad": "notepad",
 
     "калькулятор": "calculator",
     "calculator": "calculator",
@@ -39,144 +42,142 @@ APP_ALIASES = {
     "taskmgr": "taskmgr",
 
     "chrome": "chrome",
+    "google chrome": "chrome",
     "хром": "chrome",
     "браузер": "chrome",
 
     "edge": "edge",
+    "microsoft edge": "edge",
+    "эдж": "edge",
+
+    "store": "store",
+    "microsoft store": "store",
+    "магазин": "store",
+    "магазин microsoft": "store",
 
     "настройки": "settings",
     "settings": "settings",
 }
 
 
-def detect_action(text: str) -> str | None:
-    lowered = text.lower()
+SPECIAL_COMMANDS = {
+    "пуск": {"tool": "press_key", "key": "win"},
+    "start menu": {"tool": "press_key", "key": "win"},
+    "открой пуск": {"tool": "press_key", "key": "win"},
+    "нажми пуск": {"tool": "press_key", "key": "win"},
 
-    if any(word in lowered for word in CLOSE_WORDS):
-        return "close_app"
+    "сверни все": {"tool": "press_hotkey", "keys": ["win", "d"]},
+    "сверни всё": {"tool": "press_hotkey", "keys": ["win", "d"]},
+    "покажи рабочий стол": {"tool": "press_hotkey", "keys": ["win", "d"]},
+    "show desktop": {"tool": "press_hotkey", "keys": ["win", "d"]},
 
-    if any(word in lowered for word in FOCUS_WORDS):
-        return "focus_app"
+    "закрой окно": {"tool": "press_hotkey", "keys": ["alt", "f4"]},
+    "close window": {"tool": "press_hotkey", "keys": ["alt", "f4"]},
 
-    if any(word in lowered for word in OPEN_WORDS):
-        return "open_app"
+    "скопируй": {"tool": "press_hotkey", "keys": ["ctrl", "c"]},
+    "copy": {"tool": "press_hotkey", "keys": ["ctrl", "c"]},
 
-    return None
+    "вставь": {"tool": "press_hotkey", "keys": ["ctrl", "v"]},
+    "paste": {"tool": "press_hotkey", "keys": ["ctrl", "v"]},
+
+    "выдели всё": {"tool": "press_hotkey", "keys": ["ctrl", "a"]},
+    "выдели все": {"tool": "press_hotkey", "keys": ["ctrl", "a"]},
+    "select all": {"tool": "press_hotkey", "keys": ["ctrl", "a"]},
+
+    "enter": {"tool": "press_key", "key": "enter"},
+    "энтер": {"tool": "press_key", "key": "enter"},
+    "escape": {"tool": "press_key", "key": "esc"},
+    "esc": {"tool": "press_key", "key": "esc"},
+}
 
 
-def normalize_app_name(raw: str) -> str | None:
-    text = raw.lower().strip()
+def clean_text(text: str) -> str:
+    return " ".join(text.lower().strip().split())
 
-    best_app = None
-    best_score = 0
 
-    for alias, app in APP_ALIASES.items():
+def normalize_known_app(app_text: str) -> str | None:
+    """
+    Нормализует только если уверены.
+    Не делает агрессивное fuzzy-угадывание, чтобы microsoft store не превращался в edge.
+    """
+    text = clean_text(app_text)
+
+    if not text:
+        return None
+
+    if text in APP_ALIASES:
+        return APP_ALIASES[text]
+
+    # Проверка по целым фразам
+    for alias, app in sorted(APP_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
         if alias in text:
             return app
 
-        score = fuzz.partial_ratio(alias, text)
-        if score > best_score:
-            best_score = score
-            best_app = app
+    # Осторожный fuzzy только для коротких ошибочных распознаваний
+    # Например "паинт" / "пейнт", но не "microsoft store" → "microsoft edge"
+    if len(text) <= 8:
+        best_app = None
+        best_score = 0
 
-    if best_score >= 75:
-        return best_app
+        for alias, app in APP_ALIASES.items():
+            score = fuzz.ratio(text, alias)
+            if score > best_score:
+                best_score = score
+                best_app = app
+
+        if best_score >= 82:
+            return best_app
 
     return None
 
 
-def get_running_window_names() -> list[str]:
-    result = []
+def find_action(text: str) -> tuple[str | None, str]:
+    lowered = clean_text(text)
 
-    for window in gw.getAllWindows():
-        title = (window.title or "").strip()
-        if title:
-            result.append(title)
+    groups = [
+        ("close_app", CLOSE_WORDS),
+        ("focus_app", FOCUS_WORDS),
+        ("open_app", OPEN_WORDS),
+    ]
 
-    return result
+    for tool, words in groups:
+        for word in sorted(words, key=len, reverse=True):
+            word = clean_text(word)
 
+            if lowered == word:
+                return tool, ""
 
-def get_running_process_names() -> list[str]:
-    result = []
+            if lowered.startswith(word + " "):
+                app_part = lowered[len(word):].strip()
+                return tool, app_part
 
-    for proc in psutil.process_iter(["name"]):
-        try:
-            name = proc.info.get("name")
-            if name:
-                result.append(name)
-        except Exception:
-            pass
-
-    return result
-
-
-def guess_app_from_running(command: str) -> str | None:
-    lowered = command.lower()
-
-    candidates = []
-
-    for title in get_running_window_names():
-        candidates.append(title)
-
-    for proc_name in get_running_process_names():
-        candidates.append(proc_name)
-
-    best = None
-    best_score = 0
-
-    for candidate in candidates:
-        score = fuzz.partial_ratio(lowered, candidate.lower())
-        if score > best_score:
-            best_score = score
-            best = candidate
-
-    if best_score < 55:
-        return None
-
-    return best
+    return None, lowered
 
 
 def fast_plan(command: str) -> dict | None:
-    text = command.lower().strip()
+    text = clean_text(command)
 
-    # Команды без объекта
-    if text in ["пуск", "открой пуск", "нажми пуск"]:
-        return {"tool": "press_key", "key": "win"}
+    if text in SPECIAL_COMMANDS:
+        return SPECIAL_COMMANDS[text]
 
-    if text in ["сверни все", "сверни всё", "покажи рабочий стол", "рабочий стол"]:
-        return {"tool": "press_hotkey", "keys": ["win", "d"]}
+    tool, app_part = find_action(text)
 
-    if text in ["закрой окно", "закрой текущее окно"]:
-        return {"tool": "press_hotkey", "keys": ["alt", "f4"]}
+    if tool:
+        known_app = normalize_known_app(app_part)
 
-    if text in ["скопируй", "копировать"]:
-        return {"tool": "press_hotkey", "keys": ["ctrl", "c"]}
-
-    if text in ["вставь", "вставить"]:
-        return {"tool": "press_hotkey", "keys": ["ctrl", "v"]}
-
-    if text in ["выдели всё", "выдели все", "выделить всё"]:
-        return {"tool": "press_hotkey", "keys": ["ctrl", "a"]}
-
-    action = detect_action(text)
-    if not action:
-        return None
-
-    app = normalize_app_name(text)
-
-    if app:
         return {
-            "tool": action,
-            "app": app
+            "tool": tool,
+            "app": known_app or app_part
         }
 
-    # Если приложение не знаем по алиасам, пробуем найти среди открытых окон/процессов
-    running_guess = guess_app_from_running(text)
+    # Если сказали просто "paint" или "диспетчер задач" без глагола,
+    # считаем, что хотят открыть приложение.
+    known_app = normalize_known_app(text)
 
-    if running_guess:
+    if known_app:
         return {
-            "tool": action,
-            "app": running_guess
+            "tool": "open_app",
+            "app": known_app
         }
 
     return None

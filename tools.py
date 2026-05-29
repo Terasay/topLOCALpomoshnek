@@ -1,18 +1,26 @@
+import os
 import time
+import shutil
 import subprocess
 import pyautogui
 import pygetwindow as gw
 import psutil
+import pyperclip
 from rapidfuzz import fuzz
 
 
 pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.15
+pyautogui.PAUSE = 0.12
 
 
 APP_ALIASES = {
     "проводник": "explorer",
     "explorer": "explorer",
+    "file explorer": "explorer",
+    "store": "store",
+    "microsoft store": "store",
+    "магазин": "store",
+    "магазин microsoft": "store",
 
     "блокнот": "notepad",
     "notepad": "notepad",
@@ -22,21 +30,26 @@ APP_ALIASES = {
     "calc": "calculator",
 
     "paint": "paint",
+    "pa": "paint",
     "паинт": "paint",
     "пейнт": "paint",
+    "mspaint": "paint",
 
-    "браузер": "chrome",
     "chrome": "chrome",
+    "google chrome": "chrome",
     "хром": "chrome",
+    "браузер": "chrome",
 
     "edge": "edge",
+    "microsoft edge": "edge",
+    "эдж": "edge",
 
+    "taskmgr": "taskmgr",
     "диспетчер задач": "taskmgr",
     "task manager": "taskmgr",
-    "taskmgr": "taskmgr",
 
-    "настройки": "settings",
     "settings": "settings",
+    "настройки": "settings",
 }
 
 
@@ -46,14 +59,15 @@ OPEN_COMMANDS = {
     "calculator": "calc.exe",
     "paint": "mspaint.exe",
     "chrome": "chrome.exe",
-    "edge": "msedge.exe",
+    "edge": "microsoft-edge:",
     "taskmgr": "taskmgr.exe",
     "settings": "ms-settings:",
+    "store": "ms-windows-store:",
 }
 
 
 PROCESS_HINTS = {
-    "explorer": ["explorer.exe"],
+    # explorer.exe специально не убиваем, иначе можно снести оболочку Windows.
     "notepad": ["notepad.exe"],
     "calculator": ["calculator.exe", "calc.exe"],
     "paint": ["mspaint.exe", "paint.exe"],
@@ -61,6 +75,23 @@ PROCESS_HINTS = {
     "edge": ["msedge.exe"],
     "taskmgr": ["taskmgr.exe"],
     "settings": ["SystemSettings.exe"],
+}
+
+
+BLOCKED_KILL_PROCESSES = {
+    "system",
+    "registry",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "python.exe",
+    "pythonw.exe",
 }
 
 
@@ -74,52 +105,98 @@ def normalize_app_name(app_name: str) -> str:
     best_score = 0
 
     for alias in APP_ALIASES:
-        score = fuzz.ratio(app, alias)
+        score = fuzz.partial_ratio(app, alias)
+
         if score > best_score:
             best_score = score
             best_key = alias
 
-    if best_score >= 70:
+    if best_key and best_score >= 75:
         return APP_ALIASES[best_key]
 
     return app
 
 
-def open_app(app_name: str):
-    app = normalize_app_name(app_name)
-    target = OPEN_COMMANDS.get(app)
+def find_exe_in_common_paths(exe_name: str) -> str | None:
+    found = shutil.which(exe_name)
 
-    if target:
-        subprocess.Popen(target, shell=True)
-        return
+    if found:
+        return found
 
-    # Универсальный fallback: открыть через Windows Search
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+
+    possible_subpaths = [
+        os.path.join("Microsoft", "Edge", "Application"),
+        os.path.join("Google", "Chrome", "Application"),
+    ]
+
+    for root in roots:
+        if not root:
+            continue
+
+        for sub in possible_subpaths:
+            candidate = os.path.join(root, sub, exe_name)
+            if os.path.exists(candidate):
+                return candidate
+
+    return None
+
+
+def launch_by_search(app_name: str):
+    old_clipboard = ""
+
+    try:
+        old_clipboard = pyperclip.paste()
+    except Exception:
+        pass
+
     pyautogui.press("win")
-    time.sleep(0.4)
-    pyautogui.write(app_name)
-    time.sleep(0.3)
+    time.sleep(0.35)
+
+    # Вставка через буфер обмена не зависит от русской/английской раскладки.
+    pyperclip.copy(app_name)
+    pyautogui.hotkey("ctrl", "v")
+    time.sleep(0.35)
     pyautogui.press("enter")
 
+    try:
+        pyperclip.copy(old_clipboard)
+    except Exception:
+        pass
 
-def close_app(app_name: str):
+
+def open_app(app_name: str):
     app = normalize_app_name(app_name)
+    command = OPEN_COMMANDS.get(app)
 
-    closed = close_window_by_title(app_name)
+    if command:
+        if command.endswith(":"):
+            os.startfile(command)
+            return
 
-    if closed:
-        return
+        exe_path = find_exe_in_common_paths(command)
 
-    killed = terminate_process_by_name(app)
+        if exe_path:
+            subprocess.Popen([exe_path])
+            return
 
-    if killed:
-        return
+        try:
+            subprocess.Popen(command, shell=True)
+            return
+        except Exception:
+            pass
 
-    raise ValueError(f"Не удалось найти окно или процесс для: {app_name}")
+    # Последний fallback: Windows Search.
+    launch_by_search(app_name)
 
 
 def close_window_by_title(query: str) -> bool:
     query = query.lower().strip()
-    normalized_query = normalize_app_name(query)
+    normalized = normalize_app_name(query)
 
     windows = gw.getAllWindows()
 
@@ -132,9 +209,10 @@ def close_window_by_title(query: str) -> bool:
         if not title:
             continue
 
-        score1 = fuzz.partial_ratio(query, title)
-        score2 = fuzz.partial_ratio(normalized_query, title)
-        score = max(score1, score2)
+        score = max(
+            fuzz.partial_ratio(query, title),
+            fuzz.partial_ratio(normalized, title)
+        )
 
         if score > best_score:
             best_score = score
@@ -147,8 +225,10 @@ def close_window_by_title(query: str) -> bool:
     return False
 
 
-def terminate_process_by_name(app: str) -> bool:
+def terminate_process_by_name(app_name: str) -> bool:
+    app = normalize_app_name(app_name)
     hints = PROCESS_HINTS.get(app, [])
+
     killed = False
 
     for proc in psutil.process_iter(["pid", "name"]):
@@ -158,13 +238,18 @@ def terminate_process_by_name(app: str) -> bool:
             if not name:
                 continue
 
+            if name in BLOCKED_KILL_PROCESSES:
+                continue
+
             if name in [h.lower() for h in hints]:
                 proc.terminate()
                 killed = True
                 continue
 
+            # Для неизвестных приложений fuzzy-убийство делаем осторожно.
             score = fuzz.partial_ratio(app, name)
-            if score >= 80:
+
+            if score >= 90:
                 proc.terminate()
                 killed = True
 
@@ -174,9 +259,19 @@ def terminate_process_by_name(app: str) -> bool:
     return killed
 
 
+def close_app(app_name: str):
+    if close_window_by_title(app_name):
+        return
+
+    if terminate_process_by_name(app_name):
+        return
+
+    raise ValueError(f"Не удалось найти окно или процесс для: {app_name}")
+
+
 def focus_app(app_name: str):
     query = app_name.lower().strip()
-    normalized_query = normalize_app_name(query)
+    normalized = normalize_app_name(query)
 
     windows = gw.getAllWindows()
 
@@ -189,9 +284,10 @@ def focus_app(app_name: str):
         if not title:
             continue
 
-        score1 = fuzz.partial_ratio(query, title)
-        score2 = fuzz.partial_ratio(normalized_query, title)
-        score = max(score1, score2)
+        score = max(
+            fuzz.partial_ratio(query, title),
+            fuzz.partial_ratio(normalized, title)
+        )
 
         if score > best_score:
             best_score = score
@@ -213,7 +309,8 @@ def press_key(key: str):
 
 
 def type_text(text: str):
-    pyautogui.write(text, interval=0.02)
+    pyperclip.copy(text)
+    pyautogui.hotkey("ctrl", "v")
 
 
 def click_position(x: int, y: int, button: str = "left"):
